@@ -1,5 +1,7 @@
 import java.util.ArrayList;
 import java.util.Arrays;
+import java.util.HashMap;
+import java.util.Map;
 
 public class Tokeniser {
     public static Token parseInput(String input){
@@ -17,7 +19,20 @@ public class Tokeniser {
             case "VOTE_OPTIONS":
                 return new VoteOptionsToken(Arrays.copyOfRange(parts, 1, parts.length));
             case "VOTE":
-                return new VoteToken(Integer.parseInt(parts[1]), parts[2]);
+                if (parts.length > 3){
+                    //This is a multivote voken (used in subsequent rounds)
+                    Map<Integer, String> votes = new HashMap<>();
+                    for (int i = 1; i < parts.length - 1; i += 2){
+                        int p = Integer.parseInt(parts[i]);
+                        String v = parts[i+1];
+                        votes.put(p, v);
+                    }
+                    return new MultiVoteToken(votes);
+                } else {
+                    //This is a single vote token (used in the first round)
+                    return new VoteToken(Integer.parseInt(parts[1]), parts[2]);
+                }
+
             case "OUTCOME":
                 int[] participants = new int[parts.length - 2];
                 int i = 0;
@@ -142,6 +157,32 @@ class VoteToken extends Token {
 
     public String getVote() {
         return vote;
+    }
+}
+
+class MultiVoteToken extends Token {
+    //VOTE 12346 A 12347 B
+    private Map<Integer, String> votes;
+
+    public MultiVoteToken(Map<Integer, String> votes){
+        super("VOTE");
+        this.votes = votes;
+    }
+
+    @Override
+    public String toString(){
+        StringBuilder sb = new StringBuilder();
+        for (int port : votes.keySet()){
+            sb.append(port);
+            sb.append(" ");
+            sb.append(votes.get(port));
+            sb.append(" ");
+        }
+        return "VOTE " + sb.toString();
+    }
+
+    public Map<Integer, String> getVotes(){
+        return votes;
     }
 }
 

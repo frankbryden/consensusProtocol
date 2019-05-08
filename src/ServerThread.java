@@ -49,5 +49,13 @@ public class ServerThread implements Runnable {
         this.connections.values().forEach(connection -> connection.send(token));
     }
 
+    public void stop(){
+        try {
+            serverSocket.close();
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+    }
+
 
 }

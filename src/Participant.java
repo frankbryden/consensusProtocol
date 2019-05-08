@@ -4,6 +4,7 @@ import java.io.InputStreamReader;
 import java.io.PrintWriter;
 import java.net.Socket;
 import java.util.*;
+import java.util.stream.Collectors;
 
 public class Participant {
     private enum FailureCondition {NONE, DURING_STEP_4, AFTER_STEP_4}
@@ -65,16 +66,24 @@ public class Participant {
         sendJoin();
     }
 
-    private void onData(Token token){
+    private synchronized void onData(Token token){
         if (token instanceof DetailsToken){
             onDetails((DetailsToken) token);
         } else if (token instanceof VoteOptionsToken){
             onVoteOptions((VoteOptionsToken) token);
-        } else if (token instanceof  VoteToken){
+        } else if (token instanceof  VoteToken) {
             onParticipantVote((VoteToken) token);
+        } else if (token instanceof MultiVoteToken){
+            onParticipantMultiVote((MultiVoteToken) token);
         } else {
             System.err.println("Unknown token : " + token.toString());
         }
+    }
+
+    private synchronized void onParticipantDisconnect(int port){
+        System.out.println("Participant on port " + port + " has disconnected.");
+        this.connectionsToOtherParticipants.remove(port);
+        //TODO we might have been waiting for this guy's vote - check if we were, and if so, proceed to next step
     }
 
     private void onDetails(DetailsToken token){
@@ -94,8 +103,22 @@ public class Participant {
         System.out.println("Vote received from " + token.getPort() + " (voted for " + token.getVote() + ")");
         voteTracker.castVote(token.getPort(), token.getVote());
         if (allVotesCast()){
-            //Move on to outcome determination
-            resolveOutcome();
+            //We have finished a round. Either move on to the next round, or if there are no new votes, resolve the outcome.
+            System.out.println("All votes have been cast");
+            if (!voteTracker.hasNewVotes()){
+                System.out.println("Moving on to next round");
+                nextRound();
+            } else {
+                //Move on to outcome determination
+                System.out.println("No new votes, moving on to resolution of outcome.");
+                resolveOutcome();
+            }
+        }
+    }
+
+    private void onParticipantMultiVote(MultiVoteToken token){
+        for (int port : token.getVotes().keySet()){
+            voteTracker.castVote(port, token.getVotes().get(port));
         }
     }
 
@@ -105,6 +128,17 @@ public class Participant {
         listenForParticipants();
         connectToOtherParticipants();
         sendVoteToParticipants();
+    }
+
+    private void nextRound(){
+        sendNewVotes();
+        voteTracker.nextRound();
+    }
+
+    private void sendNewVotes(){
+        MultiVoteToken newVotes = new MultiVoteToken(voteTracker.getNewVotes());
+        System.out.println("Sending multivote token " + newVotes.getVotes().toString());
+        sendTokenToParticipants(newVotes);
     }
 
     private void resolveOutcome(){
@@ -140,22 +174,58 @@ public class Participant {
     private void castSelfVote(){
         Random r = new Random(System.currentTimeMillis());
         this.ownVote = voteOptions[r.nextInt(voteOptions.length)];
+        voteTracker.castVote(this.port, this.ownVote);
     }
 
     private void sendVoteToParticipants(){
+        Token voteToken = new VoteToken(this.port, ownVote);
+        if (failureCondition == FailureCondition.DURING_STEP_4){
+            List<Integer> ports = new ArrayList<>(connectionsToOtherParticipants.keySet());
+            Random r = new Random(System.currentTimeMillis());
+            int randIndex = r.nextInt(ports.size());
+            ports.remove(randIndex);
+            System.out.println("Sending vote to " + ports.toString());
+            for (int port : ports){
+                connectionsToOtherParticipants.get(port).send(voteToken);
+            }
+            fail();
+        } else {
+            sendTokenToParticipants(voteToken);
+        }
+
+    }
+
+    private void sendTokenToParticipants(Token token){
         for (int port : this.connectionsToOtherParticipants.keySet()){
-            this.connectionsToOtherParticipants.get(port).send(new VoteToken(this.port, ownVote));
+            this.connectionsToOtherParticipants.get(port).send(token);
         }
     }
 
     private boolean allVotesCast(){
-        return voteTracker.getVoteCount() == ports.size();
+        System.out.println("voteTracker.getVoteCount() = " + voteTracker.getVoteCount());
+        System.out.println("ports.size() = " + ports.size());
+        return voteTracker.getVoteCount() - 1 == ports.size();
     }
 
 
     private void sendOutcome(){
         String winningVote = voteTracker.getWinningVote();
         coordinatorConnection.getConnection().send(new OutcomeToken(winningVote, voteTracker.getParticipants().stream().mapToInt(Integer::intValue).toArray()));
+        shutdown();
+    }
+
+    private void shutdown(){
+        System.out.println("Shutting down process by terminating remote connections.");
+        for (int port : connectionsToOtherParticipants.keySet()){
+            connectionsToOtherParticipants.get(port).stop();
+        }
+    }
+
+    private void fail(){
+        System.out.println("We are in failure condition : " + this.failureCondition);
+        System.out.println("Fail triggered");
+        connectionsToOtherParticipants.values().forEach(Connection::stop);
+        System.exit(-1);
     }
 
     private void sendJoin(){

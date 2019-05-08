@@ -96,6 +96,14 @@ public class Coordinator {
         } else {
             System.out.println("Conclusion was made! The outcome of the vote was " + outcomes.get(0));
         }
+        killConnections();
+        System.out.println("Killed connections");
+    }
+
+    private void killConnections(){
+        for (Connection connection : participants.values()){
+            connection.stop();
+        }
     }
 
     private boolean checkIfAllParticipantsJoined(){
