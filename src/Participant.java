@@ -1,10 +1,6 @@
-import java.io.BufferedReader;
 import java.io.IOException;
-import java.io.InputStreamReader;
-import java.io.PrintWriter;
-import java.net.Socket;
 import java.util.*;
-import java.util.stream.Collectors;
+import java.util.function.Function;
 
 public class Participant {
     private enum FailureCondition {NONE, DURING_STEP_4, AFTER_STEP_4}
@@ -16,12 +12,13 @@ public class Participant {
 
     //Runtime members
     private ServerThread serverThread;
-    private ClientThread coordinatorConnection; //Used to connect to coordinator
+    private Connection coordinatorConnection; //Used to connect to coordinator
     private ArrayList<Integer> ports;
     private int expectedParticipants;
     private String[] voteOptions;
     private ServerThread otherParticipantsThread;
     private Map<Integer, Connection> connectionsToOtherParticipants;
+    private List<Integer> remainingParticipants;
     private String ownVote; //This will be a random element of voteOptions
     private Voting voteTracker;
 
@@ -32,6 +29,7 @@ public class Participant {
         parseArgs(args);
         this.ports = new ArrayList<>();
         this.connectionsToOtherParticipants = new HashMap<>();
+        this.remainingParticipants = new ArrayList<>();
         this.voteTracker = new Voting();
         start();
     }
@@ -41,8 +39,11 @@ public class Participant {
         this.port = Integer.parseInt(args[1]);
         this.timeout = Integer.parseInt(args[2]);
         this.failureCondition = getFailureCondition(Integer.parseInt(args[3]));
-        this.expectedParticipants = Integer.parseInt(args[1]);
-        this.voteOptions = Arrays.copyOfRange(args, 2, args.length);
+        if (args.length > 4){
+            this.ownVote = args[4];
+            System.out.println("Own vote is " + ownVote);
+        }
+
     }
 
     private FailureCondition getFailureCondition(int failureCode) {
@@ -61,12 +62,17 @@ public class Participant {
 
     private void start(){
         this.currentState = ParticipantState.JOIN_COORDINATOR;
-        this.coordinatorConnection = new ClientThread(cPort);
-        this.coordinatorConnection.connect(this::onData);
+        try {
+            this.coordinatorConnection = new Connection(cPort, this::onData, this::onParticipantDisconnect);
+        } catch (IOException e) {
+            System.err.println("Failed to connect to coordinator");
+            e.printStackTrace();
+        }
         sendJoin();
     }
 
     private synchronized void onData(Token token){
+        System.out.println("++++ ON DATA ++++");
         if (token instanceof DetailsToken){
             onDetails((DetailsToken) token);
         } else if (token instanceof VoteOptionsToken){
@@ -81,9 +87,18 @@ public class Participant {
     }
 
     private synchronized void onParticipantDisconnect(int port){
+        //TODO when a participant disconnects, we don't know if he sent his vote to anyone still alive.
         System.out.println("Participant on port " + port + " has disconnected.");
+        if (port == cPort){
+            System.out.println("Coordinator disconnected.");
+            shutdown();
+            //TODO uncomment this return;
+        }
+        System.out.println("Should not be outputted if coordinator disconnected, as we should be shutdown");
         this.connectionsToOtherParticipants.remove(port);
+        this.remainingParticipants.remove(Integer.valueOf(port));
         //TODO we might have been waiting for this guy's vote - check if we were, and if so, proceed to next step
+        checkRoundEnd();
     }
 
     private void onDetails(DetailsToken token){
@@ -91,35 +106,70 @@ public class Participant {
         for (int port : token.getPorts()){
             this.ports.add(port);
         }
+        this.remainingParticipants.addAll(ports);
     }
 
     private void onVoteOptions(VoteOptionsToken token){
         System.out.println("Our options for the vote include : " + token.toString());
         this.voteOptions = token.getOptions();
-        this.vote();
+        if (currentState == ParticipantState.SEND_OUTCOME){
+            //TODO restart vote
+        } else {
+            this.vote();
+        }
+
     }
 
     private void onParticipantVote(VoteToken token){
         System.out.println("Vote received from " + token.getPort() + " (voted for " + token.getVote() + ")");
+        voteTracker.voteReceived();
         voteTracker.castVote(token.getPort(), token.getVote());
+        checkRoundEnd();
+    }
+
+    private void onParticipantMultiVote(MultiVoteToken token){
+        System.out.println("Vote received from " + token.getSourcePort() + " (voted for " + token.getVotes().toString() + ")");
+        voteTracker.voteReceived();
+        for (int port : token.getVotes().keySet()){
+            voteTracker.castMultiVote(token.getSourcePort(), port, token.getVotes().get(port));
+        }
+        checkRoundEnd();
+    }
+
+    private void checkRoundEnd(){
+        System.out.println("Checking if round is over...");
         if (allVotesCast()){
             //We have finished a round. Either move on to the next round, or if there are no new votes, resolve the outcome.
             System.out.println("All votes have been cast");
-            if (!voteTracker.hasNewVotes()){
-                System.out.println("Moving on to next round");
-                nextRound();
+            if (voteTracker.hasNewVotes()){
+                if (allParticipantsKnowledgeable()){
+                    System.out.println("There are new votes, but everyone knows about them");
+                    resolveOutcome();
+                } else {
+                    System.out.println("There are still new votes and not everyone knows about them - moving on to next round");
+                    nextRound();
+                }
+
             } else {
                 //Move on to outcome determination
                 System.out.println("No new votes, moving on to resolution of outcome.");
                 resolveOutcome();
             }
+        } else {
+            System.out.println("Not all votes have been cast");
         }
     }
 
-    private void onParticipantMultiVote(MultiVoteToken token){
-        for (int port : token.getVotes().keySet()){
-            voteTracker.castVote(port, token.getVotes().get(port));
+    private boolean allParticipantsKnowledgeable(){
+        System.out.println("Remaining participants : " + remainingParticipants.toString());
+        for (int port : remainingParticipants){
+            int knowledgeSize = voteTracker.getKnowledgeSize(port);
+            System.out.println("Knowledge size of " + port + " is " + knowledgeSize);
+            if (knowledgeSize < ports.size()){
+                return false;
+            }
         }
+        return true;
     }
 
     private void vote(){
@@ -131,6 +181,7 @@ public class Participant {
     }
 
     private void nextRound(){
+        System.out.println("== NEW ROUND ==");
         sendNewVotes();
         voteTracker.nextRound();
     }
@@ -148,32 +199,44 @@ public class Participant {
     }
 
     private void listenForParticipants(){
-        this.otherParticipantsThread = new ServerThread(port, ports.size(), this::onData);
+        this.otherParticipantsThread = new ServerThread(port, ports.size(), this::onData, this::onParticipantDisconnect);
         new Thread(otherParticipantsThread).start();
     }
 
     private void connectToOtherParticipants(){
-        for (int port : ports){
-            connectionsToOtherParticipants.put(port, connectToParticipant(port));
+        Iterator<Integer> it = ports.iterator();
+        while (it.hasNext()){
+            int port = it.next();
+            Connection connection = connectToParticipant(port);
+            if (connection != null){
+                connectionsToOtherParticipants.put(port, connection);
+                System.out.println("Connected to " + port + ".");
+            } else {
+                System.err.println("Failed to connect to port " + port + ". Removing that participant from the list of known ports.");
+                it.remove();
+                System.out.println("Remaining ports : " + ports.toString());
+            }
+
         }
     }
 
     private Connection connectToParticipant(int port){
         try {
             System.out.println("Connecting to port " + port);
-            Socket socket = new Socket("localhost", port);
-            PrintWriter output = new PrintWriter(socket.getOutputStream());
-            BufferedReader input = new BufferedReader(new InputStreamReader(socket.getInputStream()));
-            return new Connection(socket, output, input, this::onData);
+            return new Connection(port, this::onData, this::onParticipantDisconnect);
         } catch (IOException e) {
-            e.printStackTrace();
             return null;
         }
     }
 
     private void castSelfVote(){
-        Random r = new Random(System.currentTimeMillis());
-        this.ownVote = voteOptions[r.nextInt(voteOptions.length)];
+        if (this.ownVote != null){
+            System.out.println("Own vote was given as arg, not casting it");
+        } else {
+            Random r = new Random(System.currentTimeMillis());
+            this.ownVote = voteOptions[r.nextInt(voteOptions.length)];
+        }
+
         voteTracker.castVote(this.port, this.ownVote);
     }
 
@@ -197,6 +260,7 @@ public class Participant {
 
     private void sendTokenToParticipants(Token token){
         for (int port : this.connectionsToOtherParticipants.keySet()){
+            System.out.println("Sending token " + token.name + " to " + port);
             this.connectionsToOtherParticipants.get(port).send(token);
         }
     }
@@ -209,9 +273,14 @@ public class Participant {
 
 
     private void sendOutcome(){
-        String winningVote = voteTracker.getWinningVote();
-        coordinatorConnection.getConnection().send(new OutcomeToken(winningVote, voteTracker.getParticipants().stream().mapToInt(Integer::intValue).toArray()));
-        shutdown();
+        List<String> winningVotes = voteTracker.getWinningVotes();
+        if (winningVotes.size() == 1){
+            coordinatorConnection.send(new OutcomeToken(winningVotes.get(0), voteTracker.getParticipants().stream().mapToInt(Integer::intValue).toArray()));
+        } else {
+            coordinatorConnection.send(new OutcomeToken(null, winningVotes));
+        }
+        currentState = ParticipantState.SEND_OUTCOME;
+        //TODO only shutdown when coordinator decides to, ie when connection with coordinator is closed
     }
 
     private void shutdown(){
@@ -229,7 +298,7 @@ public class Participant {
     }
 
     private void sendJoin(){
-        coordinatorConnection.getConnection().send(new JoinToken(this.port));
+        coordinatorConnection.send(new JoinToken(this.port));
     }
 
     public static void main(String[] args){

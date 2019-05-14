@@ -1,7 +1,5 @@
-import java.util.ArrayList;
-import java.util.Arrays;
-import java.util.HashMap;
-import java.util.Map;
+import java.util.*;
+import java.util.stream.Collectors;
 
 public class Tokeniser {
     public static Token parseInput(String input){
@@ -34,17 +32,41 @@ public class Tokeniser {
                 }
 
             case "OUTCOME":
-                int[] participants = new int[parts.length - 2];
-                int i = 0;
-                for (String participant : Arrays.copyOfRange(parts, 2, parts.length)){
-                    participants[i] = Integer.parseInt(participant);
-                    i++;
+                if (parts[1].equals("null")){
+                    System.out.println("Received tied vote");
+                    List<String> tiedOptions = new ArrayList<>(Arrays.asList(Arrays.copyOfRange(parts, 2, parts.length)));
+                    return new OutcomeToken(null, tiedOptions);
+                } else {
+                    int[] participants = new int[parts.length - 2];
+                    int i = 0;
+                    for (String participant : Arrays.copyOfRange(parts, 2, parts.length)){
+                        participants[i] = Integer.parseInt(participant);
+                        i++;
+                    }
+                    return new OutcomeToken(parts[1], participants);
                 }
-                return new OutcomeToken(parts[1], participants);
             default:
                 System.err.println("Unknown vote : " + parts[0]);
         }
-        return new JoinToken(637);
+        return null;
+    }
+
+    public static String joinList(int[] items){
+        return joinList(Arrays.stream(items).boxed().collect(Collectors.toList()));
+    }
+
+    public static String joinList(String[] items){
+        return joinList(Arrays.stream(items).collect(Collectors.toList()));
+    }
+
+    public static String joinList(Iterable items){
+        StringBuilder sb = new StringBuilder();
+        for (Object item : items){
+            sb.append(item);
+            sb.append(" ");
+        }
+        sb.reverse().delete(0, 1).reverse();
+        return sb.toString();
     }
 
 }
@@ -96,13 +118,7 @@ class DetailsToken extends Token {
 
     @Override
     public String toString(){
-        StringBuilder sb = new StringBuilder();
-        for (int port : ports){
-            sb.append(port);
-            sb.append(" ");
-        }
-        sb.reverse().delete(0, 1).reverse();
-        return "DETAILS " + sb.toString();
+        return "DETAILS " + Tokeniser.joinList(ports);
     }
 
     public int[] getPorts() {
@@ -121,13 +137,7 @@ class VoteOptionsToken extends Token {
 
     @Override
     public String toString(){
-        StringBuilder sb = new StringBuilder();
-        for (String option : options){
-            sb.append(option);
-            sb.append(" ");
-        }
-        sb.reverse().delete(0, 1).reverse();
-        return "VOTE_OPTIONS " + sb.toString();
+        return "VOTE_OPTIONS " + Tokeniser.joinList(options);
     }
 
     public String[] getOptions() {
@@ -163,6 +173,7 @@ class VoteToken extends Token {
 class MultiVoteToken extends Token {
     //VOTE 12346 A 12347 B
     private Map<Integer, String> votes;
+    private int sourcePort; //Sender of the token
 
     public MultiVoteToken(Map<Integer, String> votes){
         super("VOTE");
@@ -181,6 +192,14 @@ class MultiVoteToken extends Token {
         return "VOTE " + sb.toString();
     }
 
+    public int getSourcePort() {
+        return sourcePort;
+    }
+
+    public void setSourcePort(int sourcePort) {
+        this.sourcePort = sourcePort;
+    }
+
     public Map<Integer, String> getVotes(){
         return votes;
     }
@@ -190,6 +209,7 @@ class OutcomeToken extends Token {
     //OUTCOME A 12346 12347 12348
     private String outcome;
     private int[] voters; //ie. voters taken into account when determining the outcome
+    private List<String> tiedOptions; //if the outcome is null, then tiedOptions will be a list of the most popular options in case of tie
 
     public OutcomeToken(String outcome, int[] voters){
         super("OUTCOME");
@@ -197,19 +217,28 @@ class OutcomeToken extends Token {
         this.voters = voters;
     }
 
+    public OutcomeToken(String outcome, List<String> tiedOptions){
+        super("OUTCOME");
+        this.outcome = outcome;
+        this.tiedOptions = tiedOptions;
+    }
+
     @Override
     public String toString(){
-        StringBuilder sb = new StringBuilder();
-        for (int voter : voters){
-            sb.append(voter);
-            sb.append(" ");
+        if (outcome == null){
+            return "OUTCOME null " + Tokeniser.joinList(tiedOptions);
+        } else {
+            return "OUTCOME " + outcome + " " + Tokeniser.joinList(voters);
         }
-        sb.reverse().delete(0, 1).reverse();
-        return "OUTCOME " + outcome + " " + sb.toString();
+
     }
 
     public String getOutcome() {
         return outcome;
+    }
+
+    public List<String> getTiedOptions() {
+        return tiedOptions;
     }
 
     public int[] getVoters() {

@@ -13,14 +13,14 @@ public class Coordinator {
     private ServerThread serverThread;
     private ArrayList<Integer> ports;
     private Map<Integer, Connection> participants;
-    private List<String> outcomes;
+    private List<OutcomeToken> outcomes;
 
     private enum CoordinatorState {WAITING_FOR_PARTICIPANTS, SENDING_DETAILS, SENDING_VOTING_OPTIONS, WAITING_FOR_VOTES, DONE}
     private CoordinatorState currentState;
 
     public Coordinator(String[] args){
         parseArgs(args);
-        this.serverThread = new ServerThread(port, expectedParticipants, this::onParticipantData);
+        this.serverThread = new ServerThread(port, expectedParticipants, this::onParticipantData, this::onParticipantDisconnect);
         this.ports = new ArrayList<>(expectedParticipants);
         this.participants = new HashMap<>();
         this.outcomes = new ArrayList<>();
@@ -51,6 +51,10 @@ public class Coordinator {
         }
     }
 
+    private void onParticipantDisconnect(int port){
+        System.out.println("Participant disconnect on port " + port);
+    }
+
     private void onJoin(JoinToken token){
         System.out.println("A participant has joined!");
         System.out.println(token);
@@ -64,7 +68,7 @@ public class Coordinator {
 
     private void onOutcome(OutcomeToken token){
         System.out.println("Outcome received");
-        outcomes.add(token.getOutcome());
+        outcomes.add(token);
         if (allOutcomesReceived()){
             conclude();
         }
@@ -89,13 +93,29 @@ public class Coordinator {
 
     private void conclude(){
         System.out.println();
-        List<String> filtered = outcomes.stream().filter(n -> !outcomes.get(0).equals(n)).collect(Collectors.toList());
+        List<OutcomeToken> filtered = outcomes.stream().filter(n -> n.getOutcome() != null).filter(n -> !outcomes.get(0).getOutcome().equals(n.getOutcome())).collect(Collectors.toList());
         if (filtered.size() > 0){
             System.out.println("We were not able to conclude, not all peers agree");
             System.out.println(outcomes);
         } else {
-            System.out.println("Conclusion was made! The outcome of the vote was " + outcomes.get(0));
+            System.out.println("Conclusion was made! The outcome of the vote was " + outcomes.get(0).getOutcome());
+            if (outcomes.get(0).getOutcome() == null){
+                System.out.println("TIE, we need to rerun vote with fewer options");
+                if (outcomes.get(0).getTiedOptions().size() == voteOptions.length){
+                    //The tie happened with all the available options, remove one and send
+                    System.out.println("//The tie happened with all the available options, remove one and send");
+                    //TODO Restart vote with voteOptions - an option
+                    voteOptions = Arrays.copyOfRange(voteOptions, 0, voteOptions.length - 1);
+                    sendVotingOptions();
+                }
+            }
         }
+        /*
+        Gonna be used to determine how to shrink vote options
+        if (winningVotes.size() == voteOptions.length){
+                //The tie happened with all the available options, remove one and send
+            }
+         */
         killConnections();
         System.out.println("Killed connections");
     }
