@@ -291,7 +291,13 @@ public class Participant {
         if (failureCondition == FailureCondition.DURING_STEP_4){
             List<Integer> ports = new ArrayList<>(connectionsToOtherParticipants.keySet());
             Random r = new Random(System.currentTimeMillis() + this.port);
-            int randIndex = r.nextInt(ports.size());
+            int randIndex;
+            if (ports.size() < 1){
+                fail();
+                return;
+            } else {
+                randIndex = r.nextInt(ports.size());
+            }
             ports.remove(randIndex);
             if (verbose)
                 System.out.println("Sending vote to " + ports.toString());

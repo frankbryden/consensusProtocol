@@ -138,6 +138,7 @@ public class Coordinator {
         for (Connection connection : participants.values()){
             connection.stop();
         }
+        System.exit(1);
     }
 
     private boolean checkIfAllParticipantsJoined(){
