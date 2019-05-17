@@ -135,6 +135,7 @@ public class Coordinator {
     }
 
     private void killConnections(){
+        System.out.println("Killing connections");
         for (Connection connection : participants.values()){
             connection.stop();
         }
